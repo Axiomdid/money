@@ -2075,22 +2075,47 @@ function setGate(show){$('authGate').style.display=show?'flex':'none';document.b
 function authTab(m){authMode=m;document.querySelectorAll('[data-auth]').forEach(b=>b.classList.toggle('on',b.dataset.auth===m));document.querySelector('.auth-name').style.display=m==='signup'?'block':'none';$('authGo').textContent=m==='signup'?'CREATE ACCOUNT':'LOG IN';$('authErr').textContent=''}
 document.querySelectorAll('[data-auth]').forEach(b=>b.onclick=()=>authTab(b.dataset.auth));
 $('authGo').onclick=async()=>{
- const email=$('authEmail').value.trim().toLowerCase(),pw=$('authPass').value,name=$('authName').value.trim(),err=m=>{$('authErr').textContent=m};
+ const btn=$('authGo'),email=$('authEmail').value.trim().toLowerCase(),pw=$('authPass').value,name=$('authName').value.trim(),err=m=>{$('authErr').textContent=m};
  $('authErr').textContent='';
  if(!/^\S+@\S+\.\S+$/.test(email))return err('Enter a valid email address.');
  if(pw.length<6)return err('Password must be at least 6 characters.');
- if(authMode==='signup'){
-  if(!name)return err('Enter your name.');
-  const {data,error}=await db.auth.signUp({email,password:pw,options:{data:{full_name:name}}});
-  if(error)return err(error.message);
-  if(!data.session){$('authErr').textContent='Account created. Turn off email confirmation in Supabase to enter directly.';return}
-  await startSession(data.user);
- }else{
-  const {data,error}=await db.auth.signInWithPassword({email,password:pw});
-  if(error)return err(error.message);
-  await startSession(data.user);
+ btn.disabled=true;
+ btn.textContent=authMode==='signup'?'CREATING...':'LOGGING IN...';
+ try{
+  if(authMode==='signup'){
+   if(!name)return err('Enter your name.');
+   const {data,error}=await db.auth.signUp({email,password:pw,options:{data:{full_name:name}}});
+   if(error){
+    const msg=String(error.message||'');
+    if(/rate limit|too many requests/i.test(msg))return err('Too many signup attempts. Please wait a little and try again.');
+    if(/already registered|already exists/i.test(msg))return err('This email is already registered. Use LOG IN.');
+    return err(msg);
+   }
+   // With Supabase Email confirmation disabled, signUp returns an active session.
+   // If a project still has confirmation enabled, try the login once automatically
+   // so the normal MoneyMap flow remains: Create account -> Main page.
+   if(data.session&&data.user){
+    await startSession(data.user);
+   }else{
+    const retry=await db.auth.signInWithPassword({email,password:pw});
+    if(retry.error||!retry.data?.session||!retry.data?.user){
+     const msg=String(retry.error?.message||'');
+     if(/email not confirmed/i.test(msg))return err('Please turn OFF Email confirmation in Supabase → Authentication → Providers → Email.');
+     if(/rate limit|too many requests/i.test(msg))return err('Too many signup attempts. Please wait a little and try again.');
+     return err('Account was created, but automatic login is unavailable.');
+    }
+    await startSession(retry.data.user);
+   }
+  }else{
+   const {data,error}=await db.auth.signInWithPassword({email,password:pw});
+   if(error)return err(/email not confirmed/i.test(error.message||'')?'Email confirmation is enabled. Turn it OFF in Supabase → Authentication → Providers → Email.':error.message);
+   await startSession(data.user);
+  }
+  $('authPass').value='';
+ }finally{
+  btn.disabled=false;
+  btn.textContent=authMode==='signup'?'CREATE ACCOUNT':'LOG IN';
  }
- $('authPass').value='';
 };
 [$('authEmail'),$('authPass'),$('authName')].forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('authGo').click()}));
 
